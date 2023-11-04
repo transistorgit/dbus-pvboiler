@@ -55,7 +55,7 @@ class WaterHeater:
     self.powersteps =    [(-1000000, 499), (500, 999), (1000, 1499), (1500, 1999), (2000, 2499), (2500, 2999), (3000, 3499), (3500, 1000000)]
     self.powercommands = [[0, 0, 0],       [1, 0, 0],  [0, 1, 0],    [1, 1, 0],    [0, 0, 1],    [1, 0, 1],    [0, 1, 1],    [1, 1, 1]]
     self.lasttime_switched = dt.now() - timedelta(seconds=MINIMUM_SWITCH_TIME)
-    self.target_temperature = 50  #°C
+    self.target_temperature = 50  # °C
     self.current_temperature = None
     self.current_power = None
     self.status = None  # 0 Auto, 1 FORCE ON
@@ -244,6 +244,25 @@ class s5_inverter:
         return True
     except:
       return False
+    
+  # Set power limit absolute value. 0 or >=6000 is OFF/no limit
+  def set_power_limitation_absolute(self, limit_watt=6000):
+    #print(f"Power Limitation switch: {'ON' if self.bus.read_register(3069)==0xAA else 'OFF'}")
+    #print(f"Power limitation before: {self.bus.read_register(3051)/100}%")
+    #print(f"Limit power actual value before : {self.bus.read_register(3080)*10}W")
+
+    current_limit = self.bus.read_register(3080)*10
+    if limit_watt == current_limit:
+      return # nothing to do
+
+    if limit_watt >0 and limit_watt<6000:
+      self.bus.write_register(3069, 0xAA)
+      self.bus.write_register(3080, int(limit_watt / 10))
+    else:
+      self.bus.write_register(3080, 600) # default 6000W = limit off
+      self.bus.write_register(3069, 0x55)
+    #print(f"Power limitation after: {self.bus.read_register(3051)/100}%")
+    #print(f"Limit power actual value after : {self.bus.read_register(3080)*10}W")
 
 
 class DbusPvBoilerService:
@@ -257,7 +276,6 @@ class DbusPvBoilerService:
       self.instrument_inverter.serial.baudrate = BAUDRATE
       self.instrument_inverter.serial.timeout = 0.2
       self.inverter = s5_inverter(self.instrument_inverter)
-      print(self.inverter.read_serial())
 
       self.instrument_boiler = minimalmodbus.Instrument(port, SERVER_ADDRESS_BOILER)
       self.boiler = WaterHeater(self.instrument_boiler)
@@ -294,6 +312,7 @@ class DbusPvBoilerService:
       self._dbusservice.add_path('/Heater/Temperature', None, writeable=False, gettextcallback=lambda a, x: "{:.1f}°C".format(x))
       self._dbusservice.add_path('/Heater/SurplusPower', None, writeable=False, gettextcallback=lambda a, x: "{:.0f}W".format(x))
       self._dbusservice.add_path('/Heater/TargetTemperature', None, writeable=True, gettextcallback=lambda a, x: "{:.0f}°C".format(x), onchangecallback=self._handlechangedvalue)
+      self._dbusservice.add_path('/Heater/PowerLimit', None, writeable=True, gettextcallback=lambda a, x: "{:.0f}W".format(x), onchangecallback=self._handlechangedvalue)
 
       self._dbusservice.add_path('/ErrorCode', 0, writeable=True, onchangecallback=self._handlechangedvalue)
       self._dbusservice.add_path('/StatusCode', 0, writeable=True, onchangecallback=self._handlechangedvalue)
@@ -306,9 +325,11 @@ class DbusPvBoilerService:
 
       self.settings = SettingsDevice(
       bus=dbus.SystemBus() if (platform.machine() == 'armv7l') else dbus.SessionBus(),
-      supportedSettings={'targettemperature': ['/Settings/Boiler/TargetTemperature', 50, 0, 80]},
+      supportedSettings={'targettemperature': ['/Settings/Boiler/TargetTemperature', 50, 0, 80],
+                         'powerlimit': ['/Settings/Boiler/PowerLimit', 6000, 0, 6000],}, # 0 - use grid surplus only, 1-5999 - actual limit in W, 6000 - no limit
       eventCallback=self._handlechangedvalue)
       self.boiler.target_temperature = self.settings['targettemperature'] if not None else 50
+      self.power_limit = self.settings['powerlimit'] if not None else 6000
 
       gobject.timeout_add(1000, self._update) # pause 300ms before the next request
     
@@ -346,6 +367,8 @@ class DbusPvBoilerService:
       self._dbusservice['/StatusCode']        = self.inverter.read_status()
 
       try:
+        self.inverter.set_power_limitation_absolute(self.power_limit) # limit inverter to what we can consume
+
         # serviceNames = self.monitor.get_service_list('com.victronenergy.grid')
 
         #for serviceName in serviceNames:
@@ -358,6 +381,7 @@ class DbusPvBoilerService:
         self._dbusservice['/Heater/Power']      = self.boiler.current_power
         self._dbusservice['/Heater/Temperature']= self.boiler.current_temperature
         self._dbusservice['/Heater/TargetTemperature']= self.boiler.target_temperature
+        self._dbusservice['/Heater/PowerLimit']= self.power_limit
         self._dbusservice['/ErrorCode']         = 0
         self._dbusservice['/StatusCode']        = self.boiler.status
       except minimalmodbus.NoResponseError:
@@ -396,8 +420,14 @@ class DbusPvBoilerService:
     return True
 
   def _handlechangedvalue(self, path, value):
-    logging.debug("someone else updated %s to %s" % (path, value))
-    return True # accept the change
+    logging.info("someone else updated %s to %s" % (path, value))
+    if path == '/Boiler/TargetTemperature':
+      self.boiler.target_temperature = value if value <= 80 else 80
+      return True # accept the change
+    if path == '/Boiler/PowerLimit':
+      self.power_limit = value if value>0 and value<=6000 else 6000
+      return True
+    return False
 
 def main():
   thread.daemon = True # allow the program to quit
