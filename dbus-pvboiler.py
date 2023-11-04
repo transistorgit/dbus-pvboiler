@@ -12,6 +12,7 @@ import _thread as thread
 import minimalmodbus
 from time import sleep
 from datetime import datetime as dt
+from datetime import timedelta
 from threading import Thread
 
 # our own packages
@@ -26,7 +27,7 @@ SERVER_ADDRESS_BOILER = 33  # Modbus ID of the Water Heater Device
 SERVER_ADDRESS_INVERTER = 1  # Modbus ID of the PV Inverter
 BAUDRATE = 9600
 GRIDMETER_KEY_WORD = 'com.victronenergy.grid'
-MINIMUM_SWITCH_TIME = 0  # DEBUG reset to 60! shortest allowed time between boiler switching actions
+MINIMUM_SWITCH_TIME = 60  # shortest allowed time between boiler switching actions
 
 path_UpdateIndex = '/UpdateIndex'
 
@@ -53,7 +54,7 @@ class WaterHeater:
 
     self.powersteps =    [(-1000000, 499), (500, 999), (1000, 1499), (1500, 1999), (2000, 2499), (2500, 2999), (3000, 3499), (3500, 1000000)]
     self.powercommands = [[0, 0, 0],       [1, 0, 0],  [0, 1, 0],    [1, 1, 0],    [0, 0, 1],    [1, 0, 1],    [0, 1, 1],    [1, 1, 1]]
-    self.lasttime_switched = dt.now()
+    self.lasttime_switched = dt.now() - timedelta(seconds=MINIMUM_SWITCH_TIME)
     self.target_temperature = 50  #°C
     self.current_temperature = None
     self.current_power = None
@@ -62,6 +63,8 @@ class WaterHeater:
     self.Device_Type = 0xE5E1
     self.exception_counter = 0
     self.Max_Retries = 10
+    self.last_grid_surplus = 0
+    self.cmd_bits = [0, 0, 0]
 
 
   def check_device_type(self):
@@ -102,16 +105,26 @@ class WaterHeater:
           self.heartbeat = 0
 
       # switch to apropriate power level, if last switching incident is longer than the allowed minimum time ago
-      if (dt.now() - self.lasttime_switched).total_seconds() >= MINIMUM_SWITCH_TIME:
-        cmd_bits = self.calc_powercmd(grid_surplus)  # calculate power setting depending on energy surplus
+      # short delay for small steps, long delay for steps>500W
+      powerstep = abs(grid_surplus - self.last_grid_surplus)
+      logging.info(f"Powerstep {powerstep}")
+      if powerstep<=500:
+        if (dt.now() - self.lasttime_switched).total_seconds() >= MINIMUM_SWITCH_TIME/10:
+          self.cmd_bits = self.calc_powercmd(grid_surplus)  # calculate power setting depending on energy surplus
+          self.lasttime_switched = dt.now()
+      else:
+        if (dt.now() - self.lasttime_switched).total_seconds() >= MINIMUM_SWITCH_TIME:
+          self.cmd_bits = self.calc_powercmd(grid_surplus)  # calculate power setting depending on energy surplus
+          self.lasttime_switched = dt.now()
 
-        # but stop heating if target temperature is reached
-        self.current_temperature = self.instrument.read_register(self.registers["Temperature"], 2, 4)
-        if self.current_temperature >= self.target_temperature:
-          cmd_bits = [0, 0, 0]
+      # but stop heating if target temperature is reached
+      self.current_temperature = self.instrument.read_register(self.registers["Temperature"], 2, 4)
+      if self.current_temperature >= self.target_temperature:
+        self.cmd_bits = [0, 0, 0]
 
-        self.instrument.write_bits(self.registers["Power_500W"], cmd_bits)
-        self.lasttime_switched = dt.now()
+      logging.info(f"Writebits {self.cmd_bits}")
+      self.instrument.write_bits(self.registers["Power_500W"], self.cmd_bits)
+      self.last_grid_surplus = grid_surplus
           
       self.current_power = self.instrument.read_register(self.registers["Power_Return"], 0, 4)
       self.status = self.instrument.read_register(self.registers["Operation_Mode"], 0, 4)     
