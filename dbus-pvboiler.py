@@ -7,28 +7,129 @@ import platform
 import logging
 import sys
 import os
+import dbus
 import _thread as thread
 import minimalmodbus
 from time import sleep
+from datetime import datetime as dt
+from threading import Thread
 
 # our own packages
 
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), "/opt/victronenergy/dbus-systemcalc-py/ext/velib_python",),)
 from vedbus import VeDbusService
+from dbusmonitor import DbusMonitor
+from settingsdevice import SettingsDevice  # available in the velib_python repository
 
-Version = 1.4
+VERSION = 0.1
+SERVER_ADDRESS_BOILER = 33  # Modbus ID of the Water Heater Device
+SERVER_ADDRESS_INVERTER = 1  # Modbus ID of the PV Inverter
+BAUDRATE = 9600
+GRIDMETER_KEY_WORD = 'com.victronenergy.grid'
+MINIMUM_SWITCH_TIME = 0  # DEBUG reset to 60! shortest allowed time between boiler switching actions
 
 path_UpdateIndex = '/UpdateIndex'
 
 class UnknownDeviceException(Exception):
   '''Exception to report that no Solis S5 Type inverter was found'''
 
-class s5_inverter:
-  def __init__(self, port='/dev/ttyUSB0', address=1):
+
+class WaterHeater:
+  def __init__(self, instrument: minimalmodbus.Instrument):
     self._dbusservice = []
-    self.bus = minimalmodbus.Instrument(port, address)
-    self.bus.serial.baudrate = 9600
-    self.bus.serial.timeout = 0.1
+    self.instrument = instrument
+
+    self.registers = {
+      "Power_500W": 0,
+      "Power_1000W": 1,
+      "Power_2000W": 2,
+      "Temperature": 0,
+      "Heartbeat_Return" : 1,
+      "Power_Return": 2,
+      "Device_Type": 3,
+      "Operation_Mode": 4,  # AUTO/FORCE ON
+      "Heartbeat": 0
+    }
+
+    self.powersteps =    [(-1000000, 499), (500, 999), (1000, 1499), (1500, 1999), (2000, 2499), (2500, 2999), (3000, 3499), (3500, 1000000)]
+    self.powercommands = [[0, 0, 0],       [1, 0, 0],  [0, 1, 0],    [1, 1, 0],    [0, 0, 1],    [1, 0, 1],    [0, 1, 1],    [1, 1, 1]]
+    self.lasttime_switched = dt.now()
+    self.target_temperature = 50  #°C
+    self.current_temperature = None
+    self.current_power = None
+    self.status = None  # 0 Auto, 1 FORCE ON
+    self.heartbeat = 0
+    self.Device_Type = 0xE5E1
+    self.exception_counter = 0
+    self.Max_Retries = 10
+
+
+  def check_device_type(self):
+    maxtries = 3
+    tried = 0
+    found_type = 0
+    for _ in range(maxtries):
+      try:
+        tried += 1
+        found_type = self.instrument.read_register(self.registers["Device_Type"], 0, 4)
+      except Exception as e:
+        logging.warning(f'Water Heater check type: {str(e)})')
+        if tried >= maxtries:
+          raise e
+        sleep(1)
+        continue
+      
+      if found_type == self.Device_Type:
+        logging.info(f'Found Water Heater (type: {found_type:X})')
+        return
+    raise UnknownDeviceException
+    
+
+  def calc_powercmd(self, grid_surplus):
+    res = None
+    for idx in (idx for idx, (sec, fir) in enumerate(self.powersteps) if sec <= grid_surplus <= fir):
+      res = idx
+    return self.powercommands[res]
+  
+
+  def operate(self, grid_surplus):
+    # needs to be called regularly (e.g. 1/s) to update the heartbeat
+
+    try:
+      self.instrument.write_register(self.registers["Heartbeat"], self.heartbeat, 0, 16)
+      self.heartbeat += 1
+      if self.heartbeat >= 100:  # must be below 1000 for the server to work 
+          self.heartbeat = 0
+
+      # switch to apropriate power level, if last switching incident is longer than the allowed minimum time ago
+      if (dt.now() - self.lasttime_switched).total_seconds() >= MINIMUM_SWITCH_TIME:
+        cmd_bits = self.calc_powercmd(grid_surplus)  # calculate power setting depending on energy surplus
+
+        # but stop heating if target temperature is reached
+        self.current_temperature = self.instrument.read_register(self.registers["Temperature"], 2, 4)
+        if self.current_temperature >= self.target_temperature:
+          cmd_bits = [0, 0, 0]
+
+        self.instrument.write_bits(self.registers["Power_500W"], cmd_bits)
+        self.lasttime_switched = dt.now()
+          
+      self.current_power = self.instrument.read_register(self.registers["Power_Return"], 0, 4)
+      self.status = self.instrument.read_register(self.registers["Operation_Mode"], 0, 4)     
+      self.exception_counter = 0  # reset counter after successful access
+
+    except Exception as e:
+      logging.info(e)
+      if self.exception_counter >= self.Max_Retries:
+        self.exception_counter = 0
+        logging.critical("Water Heater critical error, exiting")
+        sys.exit(6)
+      self.exception_counter += 1
+    
+
+class s5_inverter:
+  def __init__(self, instrument: minimalmodbus.Instrument):
+    self._dbusservice = []
+    self.bus = instrument
 
     #use serial number production code to detect solis inverters
     ser = self.read_serial()
@@ -62,6 +163,7 @@ class s5_inverter:
           except minimalmodbus.ModbusException:
             value[4]= 0
             pass # igonore sporadic checksum or noreply errors but raise others
+        sleep(0.004)  # modbus delay
 
         # print(f"{key}: {value[-1]} {value[-2]}")
     return self.registers
@@ -93,7 +195,8 @@ class s5_inverter:
         serial["Inverter SN_4"] = self._to_little_endian(int(self.bus.read_register(3063, 0, 4)))
         serial_str = f'{serial["Inverter SN_1"]:04X}{serial["Inverter SN_2"]:04X}{serial["Inverter SN_3"]:04X}{serial["Inverter SN_4"]:04X}'
         return serial_str
-      except minimalmodbus.ModbusException:
+      except minimalmodbus.ModbusException as e:
+        print(e)
         sleep(1)
         pass
     return ''
@@ -132,13 +235,22 @@ class s5_inverter:
       return False
 
 
-class DbusSolisS5Service:
-  def __init__(self, port, servicename, deviceinstance=288, productname='Solis S5 PV Inverter', connection='unknown'):
+class DbusPvBoilerService:
+  def __init__(self, port, servicename, deviceinstance=288, productname='PV Boiler', connection='unknown'):
     try:
       self._dbusservice = VeDbusService(servicename)
 
       logging.debug("%s /DeviceInstance = %d" % (servicename, deviceinstance))
-      self.inverter = s5_inverter(port)
+      
+      self.instrument_inverter = minimalmodbus.Instrument(port, SERVER_ADDRESS_INVERTER)
+      self.instrument_inverter.serial.baudrate = BAUDRATE
+      self.instrument_inverter.serial.timeout = 0.2
+      self.inverter = s5_inverter(self.instrument_inverter)
+      print(self.inverter.read_serial())
+
+      self.instrument_boiler = minimalmodbus.Instrument(port, SERVER_ADDRESS_BOILER)
+      self.boiler = WaterHeater(self.instrument_boiler)
+      self.boiler.check_device_type()
 
       # Create the management objects, as specified in the ccgx dbus-api document
       self._dbusservice.add_path('/Mgmt/ProcessName', __file__)
@@ -147,7 +259,7 @@ class DbusSolisS5Service:
 
       # Create the mandatory objects
       self._dbusservice.add_path('/DeviceInstance', deviceinstance)
-      self._dbusservice.add_path('/ProductId', 1234) # pv inverter?
+      self._dbusservice.add_path('/ProductId', self.boiler.Device_Type) 
       self._dbusservice.add_path('/ProductName', productname)
       self._dbusservice.add_path('/FirmwareVersion', f'DSP:{self.inverter.read_dsp_version()}_LCD:{self.inverter.read_lcd_version()}')
       self._dbusservice.add_path('/HardwareVersion', self.inverter.read_type())
@@ -166,17 +278,39 @@ class DbusSolisS5Service:
       self._dbusservice.add_path('/Ac/L1/Power', None, writeable=True, gettextcallback=lambda a, x: "{:.0f}W".format(x), onchangecallback=self._handlechangedvalue)
       self._dbusservice.add_path('/Ac/L2/Power', None, writeable=True, gettextcallback=lambda a, x: "{:.0f}W".format(x), onchangecallback=self._handlechangedvalue)
       self._dbusservice.add_path('/Ac/L3/Power', None, writeable=True, gettextcallback=lambda a, x: "{:.0f}W".format(x), onchangecallback=self._handlechangedvalue)
+
+      self._dbusservice.add_path('/Heater/Power', None, writeable=False, gettextcallback=lambda a, x: "{:.0f}W".format(x))
+      self._dbusservice.add_path('/Heater/Temperature', None, writeable=False, gettextcallback=lambda a, x: "{:.1f}°C".format(x))
+      self._dbusservice.add_path('/Heater/SurplusPower', None, writeable=False, gettextcallback=lambda a, x: "{:.0f}W".format(x))
+      self._dbusservice.add_path('/Heater/TargetTemperature', None, writeable=True, gettextcallback=lambda a, x: "{:.0f}°C".format(x), onchangecallback=self._handlechangedvalue)
+
       self._dbusservice.add_path('/ErrorCode', 0, writeable=True, onchangecallback=self._handlechangedvalue)
       self._dbusservice.add_path('/StatusCode', 0, writeable=True, onchangecallback=self._handlechangedvalue)
       self._dbusservice.add_path('/Position', 0, writeable=True, onchangecallback=self._handlechangedvalue)
       self._dbusservice.add_path(path_UpdateIndex, 0, writeable=True, onchangecallback=self._handlechangedvalue)
 
-      gobject.timeout_add(300, self._update) # pause 300ms before the next request
+      logging.info('Searching Gridmeter on VEBus')
+      dummy = {'code': None, 'whenToLog': 'configChange', 'accessLevel': None}
+      self.monitor = DbusMonitor({'com.victronenergy.grid': {'/Ac/Power': dummy}})
+
+      self.settings = SettingsDevice(
+      bus=dbus.SystemBus() if (platform.machine() == 'armv7l') else dbus.SessionBus(),
+      supportedSettings={'targettemperature': ['/Settings/Boiler/TargetTemperature', 50, 0, 80]},
+      eventCallback=self._handlechangedvalue)
+      self.boiler.target_temperature = self.settings['targettemperature'] if not None else 50
+
+      gobject.timeout_add(1000, self._update) # pause 300ms before the next request
+    
+    
+      # TODO implement specific messages for failing devices
     except UnknownDeviceException:
       logging.warning('No Solis Inverter detected, exiting')
       sys.exit(1)
+    except minimalmodbus.NoResponseError:
+      logging.critical('No Response, exiting')
+      sys.exit(2)
     except Exception as e:
-      logging.critical("Fatal error at %s", 'DbusSolisS5Service.__init', exc_info=e)
+      logging.critical("Fatal error at %s", 'DbusPvBoilerService.__init', exc_info=e)
       sys.exit(2)
 
   def _update(self):
@@ -199,6 +333,35 @@ class DbusSolisS5Service:
       self._dbusservice['/Ac/L3/Power']       = self.inverter.registers["C phase Current"][4]*self.inverter.registers["C phase Voltage"][4]
       self._dbusservice['/ErrorCode']         = 0 # TODO
       self._dbusservice['/StatusCode']        = self.inverter.read_status()
+
+      try:
+        # serviceNames = self.monitor.get_service_list('com.victronenergy.grid')
+
+        #for serviceName in serviceNames:
+        #  surplus = -self.monitor.get_value(serviceName, "/Ac/Power", 0) 
+        # surplus = -self.monitor.get_value(serviceName, "/Ac/Power", 0)  
+        surplus = self.inverter.registers["Active Power"][4] # currently we use the current pv production, not the grid surplus
+        self._dbusservice['/Heater/SurplusPower']= surplus
+        self.boiler.operate(surplus)
+
+        self._dbusservice['/Heater/Power']      = self.boiler.current_power
+        self._dbusservice['/Heater/Temperature']= self.boiler.current_temperature
+        self._dbusservice['/Heater/TargetTemperature']= self.boiler.target_temperature
+        self._dbusservice['/ErrorCode']         = 0
+        self._dbusservice['/StatusCode']        = self.boiler.status
+      except minimalmodbus.NoResponseError:
+        logging.critical('Connection to Water Heater lost, exiting')
+        try:
+          self._dbusservice['/Heater/Power']      = None
+          self._dbusservice['/Heater/Temperature']= None
+          self._dbusservice['/ErrorCode']         = 2
+          self._dbusservice['/StatusCode']        = None
+        except Exception:
+          pass
+      except Exception as e:
+        logging.critical("Error in Water Heater", exc_info=sys.exc_info()[0])
+
+
     except Exception as e:
       logging.info("WARNING: Could not read from Solis S5 Inverter", exc_info=sys.exc_info()[0])
       self._dbusservice['/Ac/Power']          = None
@@ -237,7 +400,7 @@ def main():
                       ])
 
   try:
-    logging.info("Start Solis S5 Inverter modbus service v" + str(Version))
+    logging.info("Start PV Boiler modbus service v" + str(VERSION))
 
     if len(sys.argv) > 1:
         port = sys.argv[1]
@@ -251,7 +414,7 @@ def main():
 
     portname = port.split('/')[-1]
     portnumber = int(portname[-1]) if portname[-1].isdigit() else 0
-    pvac_output = DbusSolisS5Service(
+    pvac_output = DbusPvBoilerService(
       port = port,
       servicename = 'com.victronenergy.pvinverter.' + portname,
       deviceinstance = 288 + portnumber,
