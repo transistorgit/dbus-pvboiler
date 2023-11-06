@@ -14,6 +14,7 @@ from time import sleep
 from datetime import datetime as dt
 from datetime import timedelta
 from threading import Thread
+import paho.mqtt.client as mqtt
 
 # our own packages
 
@@ -22,12 +23,24 @@ from vedbus import VeDbusService
 from dbusmonitor import DbusMonitor
 from settingsdevice import SettingsDevice  # available in the velib_python repository
 
-VERSION = 0.1
+VERSION = 0.2
 SERVER_ADDRESS_BOILER = 33  # Modbus ID of the Water Heater Device
 SERVER_ADDRESS_INVERTER = 1  # Modbus ID of the PV Inverter
 BAUDRATE = 9600
 GRIDMETER_KEY_WORD = 'com.victronenergy.grid'
 MINIMUM_SWITCH_TIME = 60  # shortest allowed time between boiler switching actions
+
+Broker_Address = '192.168.168.112'
+InverterType = 'pvboiler'
+Topics = {
+    'pvpower':'iot/pv/solis/ac_active_power_kW',
+    'pvpowerlimit':'iot/pv/solis/powerlimit',
+    'status':'iot/pv/boiler/service',
+    'heaterpower':'iot/pv/boiler/power',
+    'heatertemperature':'iot/pv/boiler/temperature',
+    'heatertargettemperature':'iot/pv/boiler/targettemperature',
+    'heartbeat':'iot/pv/boiler/heartbeat'
+    }
 
 path_UpdateIndex = '/UpdateIndex'
 
@@ -266,8 +279,21 @@ class s5_inverter:
 
 
 class DbusPvBoilerService:
-  def __init__(self, port, servicename, deviceinstance=288, productname='PV Boiler', connection='unknown'):
+  def __init__(self, port, servicename, deviceinstance=288, productname='PV Boiler', connection='unknown', 
+               topics='/my/pv/inverter', broker_address = '127.0.0.1'):
     try:
+      self.broker_address = broker_address
+      self.is_connected = False
+      self.is_online = False
+      self.topics = topics
+      self.client = mqtt.Client('Venus_PV_Boiler') 
+      self.client.on_disconnect = self.on_disconnect
+      self.client.on_connect = self.on_connect
+      self.client.on_message = self.on_message
+      self.client.connect(broker_address)  # connect to broker
+      self.client.will_set(Topics['status'], 'offline', retain=True)
+
+      self.client.loop_start()
       self._dbusservice = VeDbusService(servicename)
 
       logging.debug("%s /DeviceInstance = %d" % (servicename, deviceinstance))
@@ -323,6 +349,7 @@ class DbusPvBoilerService:
       dummy = {'code': None, 'whenToLog': 'configChange', 'accessLevel': None}
       self.monitor = DbusMonitor({'com.victronenergy.grid': {'/Ac/Power': dummy}})
 
+      # TODO settings are not working yet. they were only accepted on restart
       self.settings = SettingsDevice(
       bus=dbus.SystemBus() if (platform.machine() == 'armv7l') else dbus.SessionBus(),
       supportedSettings={'targettemperature': ['/Settings/Boiler/TargetTemperature', 50, 0, 80],
@@ -344,6 +371,32 @@ class DbusPvBoilerService:
     except Exception as e:
       logging.critical("Fatal error at %s", 'DbusPvBoilerService.__init', exc_info=e)
       sys.exit(2)
+
+  def on_disconnect(self, client, userdata, rc):
+    if rc != 0:
+      logging.info('Unexpected MQTT disconnect. Will auto-reconnect')
+    try:
+      client.connect(self.broker_address)
+      self.is_connected = True
+    except Exception as e:
+      logging.error("Failed to Reconnect to " + self.broker_address + " " + str(e))
+      self.is_connected = False
+
+  def on_connect(self, client, userdata, flags, rc):
+    if rc == 0:
+      logging.info("Connected to MQTT Broker " + self.broker_address)
+      self.is_connected = True
+    else:
+      logging.error("Failed to connect, return code %d\n", rc)
+
+  def on_message(self, client, userdata, msg):
+    try:
+      self.is_online = True
+      # print(str(msg.payload.decode("utf-8")))
+    except Exception as e:
+      logging.warning("Message parsing error " + str(e))
+      print(e)
+
 
   def _update(self):
     try:
@@ -396,6 +449,17 @@ class DbusPvBoilerService:
       except Exception as e:
         logging.critical("Error in Water Heater", exc_info=sys.exc_info()[0])
 
+      try:
+        self.client.publish(self.topics['pvpower'], self.inverter.registers["Active Power"][4])
+        self.client.publish(self.topics['pvpowerlimit'], self.power_limit)
+        self.client.publish(self.topics['status'], self.boiler.status)
+        self.client.publish(self.topics['heaterpower'], self.boiler.current_power)
+        self.client.publish(self.topics['heatertemperature'], self.boiler.current_temperature)
+        self.client.publish(self.topics['heatertargettemperature'], self.boiler.target_temperature)
+        self.client.publish(self.topics['heartbeat'], self.boiler.heartbeat)
+        
+      except Exception as e:
+        logging.warning(f"Error on MQTT: {e}")
 
     except Exception as e:
       logging.info("WARNING: Could not read from Solis S5 Inverter", exc_info=sys.exc_info()[0])
@@ -459,7 +523,8 @@ def main():
       port = port,
       servicename = 'com.victronenergy.pvinverter.' + portname,
       deviceinstance = 288 + portnumber,
-      connection = 'Modbus RTU on ' + port)
+      connection = 'Modbus RTU on ' + port,
+      topics=Topics, broker_address=Broker_Address)
 
     logging.info('Connected to dbus, and switching over to gobject.MainLoop() (= event based)')
     mainloop = gobject.MainLoop()
