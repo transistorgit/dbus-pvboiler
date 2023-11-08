@@ -149,10 +149,11 @@ class WaterHeater:
         sys.exit(6)
       self.exception_counter += 1
     
-
+'''Solis S5 Inverter Interface'''
 class s5_inverter:
-  def __init__(self, instrument: minimalmodbus.Instrument):
+  def __init__(self, instrument: minimalmodbus.Instrument, rated_power=6000):
     self._dbusservice = []
+    self.rated_power = rated_power
     self.bus = instrument
 
     #use serial number production code to detect solis inverters
@@ -258,8 +259,8 @@ class s5_inverter:
     except:
       return False
     
-  # Set power limit absolute value. 0 or >=6000 is OFF/no limit
-  def set_power_limitation_absolute(self, limit_watt=6000):
+  # Set power limit absolute value. 0 or >=rated_power is OFF/no limit
+  def set_power_limitation_absolute(self, limit_watt=self.rated_power):
     #print(f"Power Limitation switch: {'ON' if self.bus.read_register(3069)==0xAA else 'OFF'}")
     #print(f"Power limitation before: {self.bus.read_register(3051)/100}%")
     #print(f"Limit power actual value before : {self.bus.read_register(3080)*10}W")
@@ -268,11 +269,11 @@ class s5_inverter:
     if limit_watt == current_limit:
       return # nothing to do
 
-    if limit_watt >0 and limit_watt<6000:
+    if limit_watt >0 and limit_watt<self.rated_power:
       self.bus.write_register(3069, 0xAA)
       self.bus.write_register(3080, int(limit_watt / 10))
     else:
-      self.bus.write_register(3080, 600) # default 6000W = limit off
+      self.bus.write_register(3080, self.rated_power / 10) # set to rated power = limit off
       self.bus.write_register(3069, 0x55)
     #print(f"Power limitation after: {self.bus.read_register(3051)/100}%")
     #print(f"Limit power actual value after : {self.bus.read_register(3080)*10}W")
@@ -282,6 +283,7 @@ class DbusPvBoilerService:
   def __init__(self, port, servicename, deviceinstance=288, productname='PV Boiler', connection='unknown', 
                topics='/my/pv/inverter', broker_address = '127.0.0.1'):
     try:
+      self.boiler_is_optional = True  # TODO make configurable
       self.broker_address = broker_address
       self.is_connected = False
       self.is_online = False
@@ -305,7 +307,14 @@ class DbusPvBoilerService:
 
       self.instrument_boiler = minimalmodbus.Instrument(port, SERVER_ADDRESS_BOILER)
       self.boiler = WaterHeater(self.instrument_boiler)
-      self.boiler.check_device_type()
+      
+      try:
+        self.boiler.check_device_type()
+      except Exception as e:
+        if self.boiler_is_optional:
+          pass
+        else:
+          raise e
 
       # Create the management objects, as specified in the ccgx dbus-api document
       self._dbusservice.add_path('/Mgmt/ProcessName', __file__)
@@ -353,10 +362,10 @@ class DbusPvBoilerService:
       self.settings = SettingsDevice(
       bus=dbus.SystemBus() if (platform.machine() == 'armv7l') else dbus.SessionBus(),
       supportedSettings={'targettemperature': ['/Settings/Boiler/TargetTemperature', 50, 0, 80],
-                         'powerlimit': ['/Settings/Boiler/PowerLimit', 6000, 0, 6000],}, # 0 - use grid surplus only, 1-5999 - actual limit in W, 6000 - no limit
+                         'powerlimit': ['/Settings/Boiler/PowerLimit', self.inverter.rated_power, 0, self.inverter.rated_power],}, # 0 - use grid surplus only, 1-5999 - actual limit in W, 6000 - no limit
       eventCallback=self._handlechangedvalue)
       self.boiler.target_temperature = self.settings['targettemperature'] if not None else 50
-      self.power_limit = self.settings['powerlimit'] if not None else 6000
+      self.power_limit = self.settings['powerlimit'] if not None else self.inverter.rated_power
 
       gobject.timeout_add(1000, self._update) # pause 300ms before the next request
     
@@ -405,7 +414,7 @@ class DbusPvBoilerService:
 
       self._dbusservice['/Ac/Power']          = self.inverter.registers["Active Power"][4]
       self._dbusservice['/Ac/Current']        = self.inverter.registers["A phase Current"][4]+self.inverter.registers["B phase Current"][4]+self.inverter.registers["C phase Current"][4]
-      self._dbusservice['/Ac/MaxPower']       = 6000
+      self._dbusservice['/Ac/MaxPower']       = self.inverter.rated_power
       self._dbusservice['/Ac/Energy/Forward'] = self.inverter.registers["Energy Total"][4]
       self._dbusservice['/Ac/L1/Voltage']     = self.inverter.registers["A phase Voltage"][4]
       self._dbusservice['/Ac/L2/Voltage']     = self.inverter.registers["B phase Voltage"][4]
@@ -429,7 +438,13 @@ class DbusPvBoilerService:
         # surplus = -self.monitor.get_value(serviceName, "/Ac/Power", 0)  
         surplus = self.inverter.registers["Active Power"][4] # currently we use the current pv production, not the grid surplus
         self._dbusservice['/Heater/SurplusPower']= surplus
-        self.boiler.operate(surplus)
+        try:
+          self.boiler.operate(surplus)
+        except Exception as e:
+          if self.boiler_is_optional:
+            pass
+          else:
+            raise e
 
         self._dbusservice['/Heater/Power']      = self.boiler.current_power
         self._dbusservice['/Heater/Temperature']= self.boiler.current_temperature
@@ -489,7 +504,7 @@ class DbusPvBoilerService:
       self.boiler.target_temperature = value if value <= 80 else 80
       return True # accept the change
     if path == '/Boiler/PowerLimit':
-      self.power_limit = value if value>0 and value<=6000 else 6000
+      self.power_limit = value if value>0 and value<=self.inverter.rated_power else self.inverter.rated_power
       return True
     return False
 
