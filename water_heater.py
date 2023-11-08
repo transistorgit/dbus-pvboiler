@@ -56,6 +56,7 @@ class WaterHeater:
         self.Max_Retries = 10
         self.last_grid_surplus = 0
         self.cmd_bits = [0, 0, 0]
+        self.connected = False
 
     def check_device_type(self):
         maxtries = 3
@@ -76,6 +77,7 @@ class WaterHeater:
 
             if found_type == self.Device_Type:
                 logging.info(f"Found Water Heater (type: {found_type:X})")
+                self.connected = True
                 return
         raise RuntimeError("No Device found")
 
@@ -91,6 +93,9 @@ class WaterHeater:
 
     def operate(self, grid_surplus):
         # needs to be called regularly (e.g. 1/s) to update the heartbeat
+
+        if self.connected is not True:
+            raise RuntimeError("Not Connected")
 
         try:
             self.instrument.write_register(
