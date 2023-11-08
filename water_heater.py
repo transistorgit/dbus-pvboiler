@@ -95,7 +95,7 @@ class WaterHeater:
         # needs to be called regularly (e.g. 1/s) to update the heartbeat
 
         if self.connected is not True:
-            raise RuntimeError("Not Connected")
+            return
 
         try:
             self.instrument.write_register(
@@ -143,8 +143,7 @@ class WaterHeater:
             )
             self.exception_counter = 0  # reset counter after successful access
 
-        except minimalmodbus.NoResponseError:
-            logging.info(e)  # TODO remove later
+        except minimalmodbus.NoResponseError as e:  # TODO remove later
             self.exception_counter = 0
         except Exception as e:
             logging.info(e)
