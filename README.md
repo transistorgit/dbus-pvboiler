@@ -13,3 +13,16 @@ Surplus (feed-in) electricity is used for domestic water heating by sending the 
 
 For further info see the mentioned root projects.
 
+## Install
+
+clone or copy files to a new folder /data/etc/dbus-pvboiler/
+
+add driver to serial starter config:
+  alias default ....:pvboiler
+  alias rs485 ....:pvboiler
+  service pvboiler dbus-pvboiler
+
+run install.sh
+
+check logs in /var/log/dbus-boiler.ttyUSBx/current
+
