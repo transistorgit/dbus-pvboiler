@@ -144,7 +144,7 @@ class DbusPvBoilerService:
       sys.exit(2)
     except Exception as e:
       logging.critical("Fatal error at %s", 'DbusPvBoilerService.__init', exc_info=e)
-      sys.exit(2)
+      sys.exit(3)
 
   def on_disconnect(self, client, userdata, rc):
     if rc != 0:
@@ -221,30 +221,26 @@ class DbusPvBoilerService:
       # surplus = -self.monitor.get_value(serviceName, "/Ac/Power", 0)  
       surplus = self.inverter.registers["Active Power"][4]  # currently we use the current pv production, not the grid surplus TODO change later
       self._dbusservice['/Heater/SurplusPower']= surplus
-      try:
-        self.boiler.operate(surplus)
-      except Exception as e:
-        if self.boiler_is_optional:
-          pass
-        else:
-          raise e
+      self.boiler.operate(surplus)
 
       self._dbusservice['/Heater/Power']      = self.boiler.current_power
       self._dbusservice['/Heater/Temperature']= self.boiler.current_temperature
       self._dbusservice['/Heater/TargetTemperature']= self.boiler.target_temperature
       self._dbusservice['/ErrorCode']         = 0
       self._dbusservice['/StatusCode']        = self.boiler.status
-    except minimalmodbus.NoResponseError:
-      logging.critical('Connection to Water Heater lost, exiting')
+    except Exception as e:
       try:
         self._dbusservice['/Heater/Power']      = None
         self._dbusservice['/Heater/Temperature']= None
-        self._dbusservice['/ErrorCode']         = 2
+        self._dbusservice['/ErrorCode']         = 5
         self._dbusservice['/StatusCode']        = None
       except Exception:
         pass
-    except Exception as e:
       logging.critical("Error in Water Heater", exc_info=sys.exc_info()[0])
+      if self.boiler_is_optional:
+        pass
+      else:
+        sys.exit(5)
 
     try:
       self.client.publish(self.topics['pvpower'], self.inverter.registers["Active Power"][4])
@@ -288,7 +284,7 @@ def main():
         port = sys.argv[1]
     else:
         logging.error("Error: no port given")
-        sys.exit(4)
+        sys.exit(6)
 
     from dbus.mainloop.glib import DBusGMainLoop
     # Have a mainloop, so we can send/receive asynchronous calls to and from dbus
@@ -309,7 +305,7 @@ def main():
 
   except Exception as e:
     logging.critical('Error at %s', 'main', exc_info=e)
-    sys.exit(3)
+    sys.exit(7)
 
 if __name__ == "__main__":
   main()
