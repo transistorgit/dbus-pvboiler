@@ -106,9 +106,14 @@ class WaterHeater:
                 self.heartbeat = 0
 
             # switch to apropriate power level, if last switching incident is longer than the allowed minimum time ago
-            # short delay for small steps, long delay for steps>500W
-            powerstep = abs(grid_surplus - self.last_grid_surplus)
-            if powerstep <= 500:
+            # short delay for small steps, long delay for steps>500W, immediately switch for downsteps
+            powerstep = grid_surplus - self.last_grid_surplus
+            if powerstep < 0:
+                self.cmd_bits = self.calc_powercmd(
+                    grid_surplus
+                )  # calculate power setting depending on energy surplus
+                self.lasttime_switched = dt.now()
+            elif powerstep <= 500:
                 if (
                     dt.now() - self.lasttime_switched
                 ).total_seconds() >= MINIMUM_SWITCH_TIME / 10:
