@@ -305,7 +305,7 @@ class DbusPvBoilerService:
             )
 
             gobject.timeout_add(
-                300, self._update
+                1000, self._update
             )  # pause 300ms before the next request
 
         except RuntimeError:
