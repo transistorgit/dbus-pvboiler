@@ -279,20 +279,20 @@ class DbusPvBoilerService:
             dummy = {"code": None, "whenToLog": "configChange", "accessLevel": None}
             self.monitor = DbusMonitor({"com.victronenergy.grid": {"/Ac/Power": dummy}})
 
-            # TODO settings are not working yet. they were only accepted on restart
+            # changing settings in dbus-spy triggers a restart. is this intended?
             self.settings = SettingsDevice(
                 bus=dbus.SystemBus()
                 if (platform.machine() == "armv7l")
                 else dbus.SessionBus(),
                 supportedSettings={
                     "targettemperature": [
-                        "/Settings/Boiler/TargetTemperature",
+                        "/Settings/Heater/TargetTemperature",
                         50,
                         0,
                         80,
                     ],
                     "powerlimit": [
-                        "/Settings/Boiler/PowerLimit",
+                        "/Settings/Heater/PowerLimit",
                         self.inverter.rated_power,
                         0,
                         self.inverter.rated_power,
@@ -474,7 +474,7 @@ class DbusPvBoilerService:
 
     def _handlechangedvalue(self, path, value):
         logging.info("someone else updated %s to %s" % (path, value))
-        if path == "/Boiler/TargetTemperature":
+        if path == "/Heater/TargetTemperature":
             self.boiler.target_temperature = value if value <= 80 else 80
             return True  # accept the change
         return False
