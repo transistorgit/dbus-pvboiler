@@ -117,7 +117,10 @@ class s5_inverter:
 
   def set_night_mode(self, on=True):
     print(f"Night Mode reg: {self.bus.read_register(3006):02X}")
-    self.bus.write_register(3006, 0xBE)
+    if on:
+      self.bus.write_register(3006, 0xBE)
+    else:
+      self.bus.write_register(3006, 0xDE)
     print(f"Night Mode reg: {self.bus.read_register(3006):02X}")
 
   def _to_little_endian(self, b):
@@ -164,7 +167,7 @@ inv = s5_inverter(sys.argv[1] if len(sys.argv)>1 else "/dev/ttyUSB0")
 print("Serial: " + inv.read_serial())
 #print("Type: " + inv.read_type())
 #print(f"Date check {inv.check_prodcution_date(inv.read_serial())}")
-#inv.set_night_mode()
+#inv.set_night_mode(False) #  device should be off at night (if no solar power)
 
 #inv.read_power_limitation()
 print("Limit to 90%")
