@@ -419,12 +419,10 @@ class DbusPvBoilerService:
         # step 2: control boiler to use that energy
         try:
             serviceNames = self.monitor.get_service_list('com.victronenergy.grid')
-            # for serviceName in serviceNames:
-            #  surplus = -self.monitor.get_value(serviceName, "/Ac/Power", 0)
-
-            # grid feed-in is counted negative. so we negate it to get the actual surplus value as positive number.
-            # use max() to clamp it to positive range
-            surplus = max(0,-self.monitor.get_value(serviceName, "/Ac/Power", 0)) 
+            for serviceName in serviceNames:
+                # grid feed-in is counted negative. so we negate it to get the actual surplus value as positive number.
+                # use max() to clamp it to positive range
+                surplus = max(0,-self.monitor.get_value(serviceName, "/Ac/Power", 0)) 
             self._dbusservice["/Heater/SurplusPower"] = surplus
             self.boiler.operate(surplus - SURPLUS_OFFSET)
 
