@@ -418,13 +418,13 @@ class DbusPvBoilerService:
 
         # step 2: control boiler to use that energy
         try:
-            # serviceNames = self.monitor.get_service_list('com.victronenergy.grid')
+            serviceNames = self.monitor.get_service_list('com.victronenergy.grid')
             # for serviceName in serviceNames:
             #  surplus = -self.monitor.get_value(serviceName, "/Ac/Power", 0)
-            # surplus = -self.monitor.get_value(serviceName, "/Ac/Power", 0)
-            surplus = self.inverter.registers["Active Power"][
-                4
-            ]  # currently we use the current pv production, not the grid surplus TODO change later
+
+            # grid feed-in is counted negative. so we negate it to get the actual surplus value as positive number.
+            # use max() to clamp it to positive range
+            surplus = max(0,-self.monitor.get_value(serviceName, "/Ac/Power", 0)) 
             self._dbusservice["/Heater/SurplusPower"] = surplus
             self.boiler.operate(surplus - SURPLUS_OFFSET)
 
@@ -433,8 +433,8 @@ class DbusPvBoilerService:
             self._dbusservice[
                 "/Heater/TargetTemperature"
             ] = self.boiler.target_temperature
-            self._dbusservice["/ErrorCode"] = 0
-            self._dbusservice["/StatusCode"] = self.boiler.status
+            # self._dbusservice["/ErrorCode"] = 0
+            # self._dbusservice["/StatusCode"] = self.boiler.status # is already written by inverter
         except Exception as e:
             try:
                 self._dbusservice["/Heater/Power"] = None
