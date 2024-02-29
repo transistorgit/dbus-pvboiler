@@ -14,38 +14,38 @@ class s5_inverter:
     if not self.check_production_date(ser):
       raise RuntimeError("Unknown Device")
 
-    self.registers = {
-      # name        : nr , format, factor, unit
-      "Active Power": [3004, 'U32', 1, 'W', 0],
-      "Energy Today": [3015, 'U16', 1, 'kWh', 0],
-      "Energy Total": [3008, 'U32', 1, 'kWh', 0],
-      "A phase Voltage": [3033, 'U16', 1, 'V', 0],
-      "B phase Voltage": [3034, 'U16', 1, 'V', 0],
-      "C phase Voltage": [3035, 'U16', 1, 'V', 0],
-      "A phase Current": [3036, 'U16', 1, 'A', 0],
-      "B phase Current": [3037, 'U16', 1, 'A', 0],
-      "C phase Current": [3038, 'U16', 1, 'A', 0],
-    }
+   
+  #returns kWh
+  def read_energy_today(self):
+    try:
+      return self.bus.read_register(3015,1,4)
+    except minimalmodbus.ModbusException:
+      return 0
 
+  # returns V, A for phase 1-3
+  def read_phase(self, phase_no: int):
+    if phase_no<1 or phase_no>3:
+      return 0, 0
+    try:
+      voltage = self.bus.read_register(3032 + phase_no,1,4)
+      current = self.bus.read_register(3035 + phase_no,1,4)
+      return voltage, current
+    except minimalmodbus.ModbusException:
+      return 0
 
-  def read_registers(self):
-    for key, value in self.registers.items():
-        factor = value[2]
-        for _ in range(3):
-          try:
-            if value[1] == 'U32':
-              value[4]= self.bus.read_long(value[0],4) * factor
-            else:
-              value[4] = self.bus.read_register(value[0],1,4) * factor
-            break
-          except minimalmodbus.ModbusException:
-            value[4]= 0
-            pass # igonore sporadic checksum or noreply errors but raise others
-        sleep(0.004)  # modbus delay
+  #returns kWh
+  def read_energy_total(self):
+    try:
+      return self.bus.read_long(3008,4)
+    except minimalmodbus.ModbusException:
+      return 0
 
-        # print(f"{key}: {value[-1]} {value[-2]}")
-    return self.registers
-
+  #returns W
+  def read_active_power(self):
+    try:
+      return self.bus.read_long(3004,4)
+    except minimalmodbus.ModbusException:
+      return 0
 
   def read_status(self):
     for _ in range(3):
@@ -113,22 +113,3 @@ class s5_inverter:
       return False
     return False
     
-  # Set power limit absolute value. 0 or >=rated_power is OFF/no limit
-  def set_power_limitation_absolute(self, limit_watt=0):
-    #print(f"Power Limitation switch: {'ON' if self.bus.read_register(3069)==0xAA else 'OFF'}")
-    #print(f"Power limitation before: {self.bus.read_register(3051)/100}%")
-    #print(f"Limit power actual value before : {self.bus.read_register(3080)*10}W")
-
-    current_limit = self.bus.read_register(3080)*10
-    if limit_watt == current_limit:
-      return # nothing to do
-
-    if limit_watt >0 and limit_watt<self.rated_power:
-      self.bus.write_register(3069, 0xAA)
-      self.bus.write_register(3080, int(limit_watt / 10))
-    else:
-      self.bus.write_register(3080, self.rated_power / 10) # set to rated power = limit off
-      self.bus.write_register(3069, 0x55)
-    #print(f"Power limitation after: {self.bus.read_register(3051)/100}%")
-    #print(f"Limit power actual value after : {self.bus.read_register(3080)*10}W")
-

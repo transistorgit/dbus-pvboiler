@@ -7,6 +7,7 @@ and a modbus rtu pv inverter of type Solis S5. The PV production is measured and
 energy, but not more
 Both devices are connected by the same modbus, so only a single serial port is used
 """
+from time import sleep
 from gi.repository import GLib as gobject
 import platform
 import logging
@@ -36,7 +37,6 @@ SERVER_ADDRESS_BOILER = 33  # Modbus ID of the Water Heater Device
 SERVER_ADDRESS_INVERTER = 1  # Modbus ID of the PV Inverter
 BAUDRATE = 9600
 GRIDMETER_KEY_WORD = "com.victronenergy.grid"
-POWER_LIMIT = 3710  # size of our heating element + offset + control margin
 SURPLUS_OFFSET = 200  # offset that must be generated more than the boiler would consume
 
 Broker_Address = "192.168.168.112"
@@ -89,9 +89,6 @@ class DbusPvBoilerService:
             self.instrument_inverter.serial.baudrate = BAUDRATE
             self.instrument_inverter.serial.timeout = 0.2
             self.inverter = s5_inverter(self.instrument_inverter)
-            self.inverter.set_power_limitation_absolute(
-                POWER_LIMIT
-            )  # limit inverter to what we can consume technically
 
             self.instrument_boiler = minimalmodbus.Instrument(
                 port, SERVER_ADDRESS_BOILER
@@ -277,7 +274,7 @@ class DbusPvBoilerService:
 
             logging.info("Searching Gridmeter on VEBus")
             dummy = {"code": None, "whenToLog": "configChange", "accessLevel": None}
-            self.monitor = DbusMonitor({"com.victronenergy.grid": {"/Ac/Power": dummy}})
+            self.monitor = DbusMonitor({GRIDMETER_KEY_WORD: {"/Ac/Power": dummy}})
 
             # changing settings in dbus-spy triggers a restart. is this intended?
             self.settings = SettingsDevice(
@@ -306,7 +303,7 @@ class DbusPvBoilerService:
 
             gobject.timeout_add(
                 1000, self._update
-            )  # pause 300ms before the next request
+            )  # pause 1000ms before the next request
 
         except RuntimeError:
             logging.warning("Critical Error, exiting")
@@ -350,49 +347,23 @@ class DbusPvBoilerService:
     def _update(self):
         try:
             # step 1: fetch energy data
-            self.inverter.read_registers()
-            self._dbusservice["/Ac/Power"] = self.inverter.registers["Active Power"][4]
-            self._dbusservice["/Ac/Current"] = (
-                self.inverter.registers["A phase Current"][4]
-                + self.inverter.registers["B phase Current"][4]
-                + self.inverter.registers["C phase Current"][4]
-            )
+            # it seems very timecritical, so we can only read power and no other values.
+            # if we would, the grid power dbus readout gets spoiled ?!
+            self._dbusservice["/Ac/Power"] = power = self.inverter.read_active_power()
+            self._dbusservice["/Ac/Current"] = 0
             self._dbusservice["/Ac/MaxPower"] = self.inverter.rated_power
-            self._dbusservice["/Ac/Energy/Forward"] = self.inverter.registers[
-                "Energy Total"
-            ][4]
-            self._dbusservice["/Ac/L1/Voltage"] = self.inverter.registers[
-                "A phase Voltage"
-            ][4]
-            self._dbusservice["/Ac/L2/Voltage"] = self.inverter.registers[
-                "B phase Voltage"
-            ][4]
-            self._dbusservice["/Ac/L3/Voltage"] = self.inverter.registers[
-                "C phase Voltage"
-            ][4]
-            self._dbusservice["/Ac/L1/Current"] = self.inverter.registers[
-                "A phase Current"
-            ][4]
-            self._dbusservice["/Ac/L2/Current"] = self.inverter.registers[
-                "B phase Current"
-            ][4]
-            self._dbusservice["/Ac/L3/Current"] = self.inverter.registers[
-                "C phase Current"
-            ][4]
-            self._dbusservice["/Ac/L1/Power"] = (
-                self.inverter.registers["A phase Current"][4]
-                * self.inverter.registers["A phase Voltage"][4]
-            )
-            self._dbusservice["/Ac/L2/Power"] = (
-                self.inverter.registers["B phase Current"][4]
-                * self.inverter.registers["B phase Voltage"][4]
-            )
-            self._dbusservice["/Ac/L3/Power"] = (
-                self.inverter.registers["C phase Current"][4]
-                * self.inverter.registers["C phase Voltage"][4]
-            )
+            self._dbusservice["/Ac/Energy/Forward"] = self.inverter.read_energy_total()
+            self._dbusservice["/Ac/L1/Voltage"] = 0
+            self._dbusservice["/Ac/L2/Voltage"] = 0
+            self._dbusservice["/Ac/L3/Voltage"] = 0
+            self._dbusservice["/Ac/L1/Current"] = 0
+            self._dbusservice["/Ac/L2/Current"] = 0
+            self._dbusservice["/Ac/L3/Current"] = 0
+            self._dbusservice["/Ac/L1/Power"] = 0
+            self._dbusservice["/Ac/L2/Power"] = 0
+            self._dbusservice["/Ac/L3/Power"] = 0
             self._dbusservice["/ErrorCode"] = 0  # TODO
-            self._dbusservice["/StatusCode"] = self.inverter.read_status()
+            self._dbusservice["/StatusCode"] = 0 # self.inverter.read_status()
 
         except Exception as e:
             logging.info(
@@ -418,13 +389,14 @@ class DbusPvBoilerService:
 
         # step 2: control boiler to use that energy
         try:
-            serviceNames = self.monitor.get_service_list('com.victronenergy.grid')
+            serviceNames = self.monitor.get_service_list(GRIDMETER_KEY_WORD)
             for serviceName in serviceNames:
                 # grid feed-in is counted negative. so we negate it to get the actual surplus value as positive number.
                 # use max() to clamp it to positive range
                 surplus = max(0,-self.monitor.get_value(serviceName, "/Ac/Power", 0)) 
-            self._dbusservice["/Heater/SurplusPower"] = surplus
-            self.boiler.operate(surplus - SURPLUS_OFFSET)
+                surplus -= SURPLUS_OFFSET
+                self._dbusservice["/Heater/SurplusPower"] = surplus
+                self.boiler.operate(surplus)
 
             self._dbusservice["/Heater/Power"] = self.boiler.current_power
             self._dbusservice["/Heater/Temperature"] = self.boiler.current_temperature
@@ -448,9 +420,7 @@ class DbusPvBoilerService:
                 sys.exit(5)
 
         try:
-            self.client.publish(
-                self.topics["pvpower"], self.inverter.registers["Active Power"][4]
-            )
+            self.client.publish(self.topics["pvpower"], power)
             self.client.publish(self.topics["status"], self.boiler.status)
             self.client.publish(self.topics["heaterpower"], self.boiler.current_power)
             self.client.publish(
