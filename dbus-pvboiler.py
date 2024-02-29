@@ -62,7 +62,7 @@ class DbusPvBoilerService:
         deviceinstance=288,
         productname="PV Boiler",
         connection="unknown",
-        topics="/my/pv/inverter",
+        topics={"top": "/my/pv/inverter"},
         broker_address="127.0.0.1",
     ):
         try:
@@ -396,7 +396,7 @@ class DbusPvBoilerService:
                 surplus = max(0,-self.monitor.get_value(serviceName, "/Ac/Power", 0)) 
                 surplus -= SURPLUS_OFFSET
                 self._dbusservice["/Heater/SurplusPower"] = surplus
-                self.boiler.operate(surplus)
+                self.boiler.operate(surplus + self.boiler.current_power) # target power is current surplus plus that what's currently burned
 
             self._dbusservice["/Heater/Power"] = self.boiler.current_power
             self._dbusservice["/Heater/Temperature"] = self.boiler.current_temperature

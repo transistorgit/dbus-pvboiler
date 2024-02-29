@@ -47,8 +47,8 @@ class WaterHeater:
         ]
         self.lasttime_switched = dt.now() - timedelta(seconds=MINIMUM_SWITCH_TIME)
         self.target_temperature = 50  # °C
-        self.current_temperature = None
-        self.current_power = None
+        self.current_temperature = float()
+        self.current_power = int()
         self.status = None  # 0 Auto, 1 FORCE ON
         self.heartbeat = 0
         self.Device_Type = 0xE5E1
@@ -131,21 +131,21 @@ class WaterHeater:
                     self.lasttime_switched = dt.now()
 
             # but stop heating if target temperature is reached
-            self.current_temperature = self.instrument.read_register(
+            self.current_temperature = float(self.instrument.read_register(
                 self.registers["Temperature"], 2, 4
-            )
+            ))
             if self.current_temperature >= self.target_temperature:
                 self.cmd_bits = [0, 0, 0]
 
             self.instrument.write_bits(self.registers["Power_500W"], self.cmd_bits)
             self.last_grid_surplus = grid_surplus
 
-            self.current_power = self.instrument.read_register(
+            self.current_power = int(self.instrument.read_register(
                 self.registers["Power_Return"], 0, 4
-            )
-            self.status = self.instrument.read_register(
+            ))
+            self.status = int(self.instrument.read_register(
                 self.registers["Operation_Mode"], 0, 4
-            )
+            ))
             self.exception_counter = 0  # reset counter after successful access
 
         except minimalmodbus.NoResponseError as e:  # TODO remove later
