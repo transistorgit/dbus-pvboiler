@@ -393,8 +393,7 @@ class DbusPvBoilerService:
             for serviceName in serviceNames:
                 # grid feed-in is counted negative. so we negate it to get the actual surplus value as positive number.
                 # use max() to clamp it to positive range
-                surplus = max(0,-self.monitor.get_value(serviceName, "/Ac/Power", 0)) 
-                surplus -= SURPLUS_OFFSET
+                surplus = max(0,-self.monitor.get_value(serviceName, "/Ac/Power", 0) - SURPLUS_OFFSET) 
                 self._dbusservice["/Heater/SurplusPower"] = surplus
                 self.boiler.operate(surplus + self.boiler.current_power) # target power is current surplus plus that what's currently burned
 
