@@ -17,6 +17,7 @@ import dbus
 import _thread as thread
 import minimalmodbus
 import paho.mqtt.client as mqtt
+from timeit import default_timer as timer
 
 # our own packages
 sys.path.insert(
@@ -38,6 +39,7 @@ SERVER_ADDRESS_INVERTER = 1  # Modbus ID of the PV Inverter
 BAUDRATE = 9600
 GRIDMETER_KEY_WORD = "com.victronenergy.grid"
 SURPLUS_OFFSET = 200  # offset that must be generated more than the boiler would consume
+LOOPTIME = 1000 # update loop time in ms
 
 Broker_Address = "192.168.168.112"
 InverterType = "pvboiler"
@@ -77,6 +79,7 @@ class DbusPvBoilerService:
             self.client.on_message = self.on_message
             self.client.connect(broker_address)  # connect to broker
             self.client.will_set(Topics["status"], "offline", retain=True)
+            self.logCounter = 0 #  counter for log suppression
 
             self.client.loop_start()
             self._dbusservice = VeDbusService(servicename)
@@ -302,7 +305,7 @@ class DbusPvBoilerService:
             )
 
             gobject.timeout_add(
-                1000, self._update
+                LOOPTIME, self._update
             )  # pause 1000ms before the next request
 
         except RuntimeError:
@@ -345,12 +348,16 @@ class DbusPvBoilerService:
             print(e)
 
     def _update(self):
+        start = timer()
         try:
             # step 1: fetch energy data
             # it seems very timecritical, so we can only read power and no other values.
             # if we would, the grid power dbus readout gets spoiled ?!
             self._dbusservice["/Ac/Power"] = power = self.inverter.read_active_power()
-            self._dbusservice["/Ac/Current"] = 0
+            #v1, c1 = self.inverter.read_phase(1)
+            #v2, c2 = self.inverter.read_phase(2)
+            #v3, c3 = self.inverter.read_phase(3)
+            self._dbusservice["/Ac/Current"] = 0 # c1 + c2 + c3
             self._dbusservice["/Ac/MaxPower"] = self.inverter.rated_power
             self._dbusservice["/Ac/Energy/Forward"] = self.inverter.read_energy_total()
             self._dbusservice["/Ac/L1/Voltage"] = 0
@@ -392,8 +399,8 @@ class DbusPvBoilerService:
             serviceNames = self.monitor.get_service_list(GRIDMETER_KEY_WORD)
             for serviceName in serviceNames:
                 # grid feed-in is counted negative. so we negate it to get the actual surplus value as positive number.
-                # use max() to clamp it to positive range
-                surplus = max(0,-self.monitor.get_value(serviceName, "/Ac/Power", 0) - SURPLUS_OFFSET) 
+                surplus = -self.monitor.get_value(serviceName, "/Ac/Power", 0) - SURPLUS_OFFSET
+                # print(f"surplus {surplus}")
                 self._dbusservice["/Heater/SurplusPower"] = surplus
                 self.boiler.operate(surplus + self.boiler.current_power) # target power is current surplus plus that what's currently burned
 
@@ -437,6 +444,16 @@ class DbusPvBoilerService:
         self._dbusservice[path_UpdateIndex] = (
             self._dbusservice[path_UpdateIndex] + 1
         ) % 255  # increment index
+        
+        end = timer()
+        duration = end-start
+        if duration > LOOPTIME:
+            self.logCounter += 1
+            if self.logCounter < 1000:
+                logging.error(f"Loop duration longer then update interval: {duration:.3f}s")
+            else:
+                self.logCounter = 0
+        # print(f"Duration: {duration:.3f}")
         return True
 
     def _handlechangedvalue(self, path, value):

@@ -1,5 +1,6 @@
 import minimalmodbus
 from time import sleep
+from typing import Tuple
 
 
 '''Solis S5 Inverter Interface'''
@@ -23,7 +24,7 @@ class s5_inverter:
       return 0
 
   # returns V, A for phase 1-3
-  def read_phase(self, phase_no: int):
+  def read_phase(self, phase_no: int) -> Tuple[float, float]:
     if phase_no<1 or phase_no>3:
       return 0, 0
     try:
