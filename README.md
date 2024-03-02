@@ -26,3 +26,7 @@ run install.sh
 
 check logs in /var/log/dbus-boiler.ttyUSBx/current
 
+## TODO
+
+the modbus is too slow to read all wanted registers in one update cycle -> increase baud rate or read registers alternating
+
