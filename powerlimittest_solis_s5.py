@@ -69,6 +69,22 @@ class s5_inverter:
     print(f'Inverter Status: {status:04X}')
     return status
 
+  def read_mode(self):
+    status = int(self.bus.read_register(3040, 0, 4))
+    print(f'Inverter working mode: {status:02X}')
+    return status
+
+  def read_power_factor_adjust(self):
+    #for fixed power factor
+    limit = float(self.bus.read_register(3051, 0, 4))
+    print(f'Inverter actual power facor adjust: {limit}')
+    return limit
+
+  def read_reactive_power_limit(self):
+    limit = float(self.bus.read_register(3052, 0, 4))
+    print(f'Inverter reactive power limit: {limit}')
+    return limit
+
   def read_power_limitation(self):
     print(f"Power Limitation switch: {'ON' if self.bus.read_register(3069)==0xAA else 'OFF'}")
     print(f"Limit power actual value: {self.bus.read_register(3080)*10}W")
@@ -161,15 +177,17 @@ class s5_inverter:
 def main():
   logging.basicConfig(level=logging.DEBUG) # use .INFO for less logging
 
-inv = s5_inverter(sys.argv[1] if len(sys.argv)>1 else "/dev/ttyUSB0")
-#inv.read_registers()
-#inv.read_status()
-print("Serial: " + inv.read_serial())
-#print("Type: " + inv.read_type())
-#print(f"Date check {inv.check_prodcution_date(inv.read_serial())}")
-#inv.set_night_mode(False) #  device should be off at night (if no solar power)
 
-#inv.read_power_limitation()
+print("Don't write settings too often. The eeprom memory has limited write cycles (10000) and will break.")
+inv = s5_inverter(sys.argv[1] if len(sys.argv)>1 else "/dev/ttyUSB0")
+inv.read_registers()
+inv.read_status()
+print("Serial: " + inv.read_serial())
+print("Type: " + inv.read_type())
+print(f"Date check {inv.check_prodcution_date(inv.read_serial())}")
+#inv.set_night_mode(True) #  device should be off at night (if no solar power) so that we can play around
+
+inv.read_power_limitation()
 print("Limit to 90%")
 inv.set_power_limitation_percent(90)
 print("Limit to 6000W")
@@ -183,6 +201,9 @@ inv.set_power_limitation_percent(0)
 print("Limit to 100%")
 inv.set_power_limitation_percent(100)
 #inv.read_power_limitation()
+
+# it is unclear if this also work if some other limitations like power factor, feed in curves 
+# are configured (by gui). needs more testing. also some register addresses seem still wrong
 
 
 if __name__ == "__main__":
