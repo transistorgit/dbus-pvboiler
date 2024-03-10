@@ -68,7 +68,7 @@ class DbusPvBoilerService:
         broker_address="127.0.0.1",
     ):
         try:
-            self.boiler_is_optional = True  # optionally, use this driver just as a inverter monitor. TODO make this configurable
+            self.boiler_is_optional = False  # optionally, use this driver just as a inverter monitor. TODO make this configurable
             self.broker_address = broker_address
             self.is_connected = False
             self.is_online = False
@@ -397,6 +397,9 @@ class DbusPvBoilerService:
         # step 2: control boiler to use that energy
         try:
             serviceNames = self.monitor.get_service_list(GRIDMETER_KEY_WORD)
+            if not serviceNames and not self.boiler_is_optional:
+                # in case we found no grid meter, exit
+                sys.exit(6)
             for serviceName in serviceNames:
                 # grid feed-in is counted negative. so we negate it to get the actual surplus value as positive number.
                 surplus = -self.monitor.get_value(serviceName, "/Ac/Power", 0) - SURPLUS_OFFSET
