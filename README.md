@@ -31,5 +31,5 @@ check logs in /var/log/dbus-boiler.ttyUSBx/current
 the modbus is too slow to read all wanted registers in one update cycle -> increase baud rate or read registers alternating
 make "boiler optional" configurable 
 add menu switch for on/off/auto (in meantime just set temperature or use physical switch)
-
+persist settings in config.ini file
 

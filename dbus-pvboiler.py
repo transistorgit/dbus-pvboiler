@@ -354,21 +354,23 @@ class DbusPvBoilerService:
             # it seems very timecritical, so we can only read power and no other values.
             # if we would, the grid power dbus readout gets spoiled ?!
             self._dbusservice["/Ac/Power"] = power = self.inverter.read_active_power()
-            #v1, c1 = self.inverter.read_phase(1)
+            voltage = 230 # fake it, because we can't read it
+            current = power / voltage
+            #v1, c1 = self.inverter.read_phase(1) # as above - currently disabled, because bus is too slow at 9600
             #v2, c2 = self.inverter.read_phase(2)
             #v3, c3 = self.inverter.read_phase(3)
-            self._dbusservice["/Ac/Current"] = 0 # c1 + c2 + c3
+            self._dbusservice["/Ac/Current"] = current # c1 + c2 + c3
             self._dbusservice["/Ac/MaxPower"] = self.inverter.rated_power
             self._dbusservice["/Ac/Energy/Forward"] = self.inverter.read_energy_total()
-            self._dbusservice["/Ac/L1/Voltage"] = 0
-            self._dbusservice["/Ac/L2/Voltage"] = 0
-            self._dbusservice["/Ac/L3/Voltage"] = 0
-            self._dbusservice["/Ac/L1/Current"] = 0
-            self._dbusservice["/Ac/L2/Current"] = 0
-            self._dbusservice["/Ac/L3/Current"] = 0
-            self._dbusservice["/Ac/L1/Power"] = 0
-            self._dbusservice["/Ac/L2/Power"] = 0
-            self._dbusservice["/Ac/L3/Power"] = 0
+            self._dbusservice["/Ac/L1/Voltage"] = voltage
+            self._dbusservice["/Ac/L2/Voltage"] = voltage
+            self._dbusservice["/Ac/L3/Voltage"] = voltage
+            self._dbusservice["/Ac/L1/Current"] = current / 3
+            self._dbusservice["/Ac/L2/Current"] = current / 3
+            self._dbusservice["/Ac/L3/Current"] = current / 3
+            self._dbusservice["/Ac/L1/Power"] = power / 3
+            self._dbusservice["/Ac/L2/Power"] = power / 3
+            self._dbusservice["/Ac/L3/Power"] = power / 3
             self._dbusservice["/ErrorCode"] = 0  # TODO
             self._dbusservice["/StatusCode"] = 0 # self.inverter.read_status()
 
