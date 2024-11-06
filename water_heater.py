@@ -4,6 +4,7 @@ from datetime import datetime as dt
 from datetime import timedelta
 import logging
 import sys
+import argparse
 
 MINIMUM_SWITCH_TIME = 60  # shortest allowed time between boiler switching actions
 
@@ -155,3 +156,41 @@ class WaterHeater:
             if self.exception_counter >= self.Max_Retries:
                 raise RuntimeError(f"Water Heater critical error, exiting {e}")
             self.exception_counter += 1
+
+
+if __name__ == "__main__":
+    # Setup logging
+    logging.basicConfig(level=logging.INFO)
+
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="Water Heater Modbus Interface")
+    parser.add_argument(
+        "--port",
+        default="/dev/ttyUSB0",
+        help="Modbus port (default: /dev/ttyUSB0)",
+    )
+    parser.add_argument(
+        "--address",
+        type=int,
+        default=33,
+        help="Modbus slave address (default: 33)",
+    )
+    args = parser.parse_args()
+
+    # Initialize the instrument
+    try:
+        instrument = minimalmodbus.Instrument(args.port, args.address)
+        instrument.serial.baudrate = 9600
+    except Exception as e:
+        logging.error(f"Failed to initialize instrument: {e}")
+        sys.exit(1)
+
+    # Initialize the WaterHeater class
+    water_heater = WaterHeater(instrument)
+
+    # Call the check_device_type function and print the result
+    try:
+        water_heater.check_device_type()
+        print("Device type check passed.")
+    except Exception as e:
+        print(f"Device type check failed: {e}")
