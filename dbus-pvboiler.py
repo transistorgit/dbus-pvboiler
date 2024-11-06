@@ -68,7 +68,7 @@ class DbusPvBoilerService:
         broker_address="127.0.0.1",
     ):
         try:
-            self.boiler_is_optional = False  # optionally, use this driver just as a inverter monitor. TODO make this configurable
+            self.boiler_is_optional = True  # optionally, use this driver just as a inverter monitor. TODO make this configurable
             self.broker_address = broker_address
             self.is_connected = False
             self.is_online = False
